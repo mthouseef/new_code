@@ -18,14 +18,22 @@ import lxml.html
 from lxml import html
 from news_details import news_data
 import uuid
+from firebase_admin import storage
+from datetime import datetime, timedelta
+from PIL import Image
+import io
+import json
 
 
 try:
     db.reference('/news/')
 except:
     #cred = credentials.Certificate(os.getcwd()+'/cron/quickakhbar20-firebase-adminsdk-6oacd-661156e85b.json')
-    cred = credentials.Certificate('/home/dev/Downloads/quickakhbar20-firebase-adminsdk-6oacd-661156e85b.json')
+    cred = credentials.Certificate('/home/ubuntu/quickakhbar20-firebase-adminsdk-6oacd-661156e85b.json')
     default_app = firebase_admin.initialize_app(cred,{'databaseURL': 'https://quickakhbar20.firebaseio.com'})
+
+bucket = storage.bucket("quickakhbar20.appspot.com")
+size = 256,256
 
 
 def get_page_content(link):
@@ -40,20 +48,21 @@ def parse_news(link,data):
         ref = db.reference('/news/'+data["country"]+'/')
         tree = get_page_content(link)
         tz = pytz.timezone(data["time_zone"])
-        #import pdb;pdb.set_trace()
+        import pdb;pdb.set_trace()
         source_date=""
         head_lines = tree.xpath(data["title_xpath"])[0].strip()
         image_source = tree.xpath(data["image_xpath"])[0]
         image = data["domain"] + image_source if "http" not in image_source else image_source
         live_date = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         published_time=datetime.now(tz=tz).strftime('%H:%M')
+        id_ = uuid.uuid1()
+        key = live_date + id_.hex
+        com_image = url_to_firebase(image, key)
         details= ' '.join(tree.xpath(data["description_xpath"])).strip() 
         summary = get_summary(details,stop_words)
         if summary == None:
             return
-        id_ = uuid.uuid1()
-        key = live_date + id_.hex
-        dictnry={"title":head_lines,"domain":data["domain"],"url":link,"image_url":image,"content":details,"date":source_date,
+        dictnry={"title":head_lines,"domain":data["domain"],"url":link,"image_url":com_image,"date":source_date,
                     "time":published_time,"summary":summary,"live_date":live_date,"contry":data["country"],"key":key}
         users_ref = ref.child(''.join(filter(str.isalnum, link)))
         users_ref.set(dictnry)
@@ -61,6 +70,17 @@ def parse_news(link,data):
     except:
         #logger.error("something in xpath happened", exc_info=True)
         return
+
+
+def url_to_firebase(url, name):
+    resp = requests.get(url, stream=True).raw
+    img = Image.open(resp);
+    img.thumbnail(size);
+    inmemoryfile = io.BytesIO()
+    img.save(inmemoryfile,format=img.format)
+    blob = bucket.blob(name);
+    blob.upload_from_string(inmemoryfile.getvalue())
+    return blob.generate_signed_url(datetime.now() + timedelta(30))
 
 def get_summary(details,stop_words):
     summary = summarizer.summarize(details, words=70)
@@ -88,12 +108,15 @@ def get_summary(details,stop_words):
     return summary
         
 for data in news_data:
-	array = []
-	tree = get_page_content(data["url"])
-	#import pdb;pdb.set_trace()
-	node = tree.xpath(data["news_url_xpath"]) if tree else ""
-	url_array = [ data["domain"] + x if "http" not in x else x for x in list(set(node))]
-	for i in url_array:
-	    val = parse_news(i,data)
-	    if val != None :
-	        array.append(val)
+    array = []
+    tree = get_page_content(data["url"])
+    #import pdb;pdb.set_trace()
+    node = tree.xpath(data["news_url_xpath"]) if tree else ""
+    url_array = [ data["domain"] + x if "http" not in x else x for x in list(set(node))]
+    for i in url_array:
+        val = parse_news(i,data)
+        if val != None :
+            array.append(val)
+    if not array:
+        with open("/home/ubuntu/log.txt", 'a') as f:
+            f.write(json.dumps(news_data))
