@@ -20,6 +20,7 @@ from news_details_v2 import news_data
 import uuid
 from firebase_admin import storage
 from datetime import datetime, timedelta
+from firebase_admin import firestore
 from PIL import Image
 import io
 import hashlib 
@@ -29,9 +30,9 @@ import json
 try:
     db.reference('/news/')
 except:
-    cred = credentials.Certificate(os.getcwd()+'/cron/quickakhbar20-firebase-adminsdk-6oacd-661156e85b.json')
+    #cred = credentials.Certificate(os.getcwd()+'/cron/quickakhbar20-firebase-adminsdk-6oacd-661156e85b.json')
     #cred = credentials.Certificate('/home/ubuntu/quickakhbar20-firebase-adminsdk-6oacd-661156e85b.json')
-    #cred = credentials.Certificate('/home/dev/Downloads/quickakhbar20-firebase-adminsdk-6oacd-661156e85b.json')
+    cred = credentials.Certificate('/home/dev/Downloads/quickakhbar20-firebase-adminsdk-6oacd-661156e85b.json')
     default_app = firebase_admin.initialize_app(cred,{'databaseURL': 'https://quickakhbar20.firebaseio.com'})
 
 bucket = storage.bucket("quickakhbar20.appspot.com")
@@ -48,7 +49,10 @@ def parse_news(link,data):
     try:
         import pdb;pdb.set_trace()
         stop_words = set(stopwords.words(data["language"]))
-        ref = db.reference('/news_v2'+'/'+data["country"]+'/'+data["category"]+"/")
+        db = firestore.client()
+        transaction = db.transaction()
+        ref = db.collection('news_v2'+'/'+data["country"])
+        #@firestore.transactional()
         tree = get_page_content(link)
         tz = pytz.timezone(data["time_zone"])
         
@@ -66,14 +70,38 @@ def parse_news(link,data):
         summary = get_summary(details,stop_words)
         if summary == None:
             return
-        dictnry={"title":head_lines,"domain":data["domain"],"url":link,"image_url":com_image,"date":source_date,
-                    "time":published_time,"summary":summary,"live_date":live_date,"contry":data["country"],"key":key}
-        users_ref = ref.child(''.join(filter(str.isalnum, id_)))
-        users_ref.set(dictnry)
+        dictnry = {id_:{"title":head_lines,"domain":data["domain"],"url":link,"image_url":com_image,"date":source_date,
+                    "time":published_time,"summary":summary,"live_date":live_date,"contry":data["country"],"key":key,"category":data["category"]}}
+        #users_ref = ref.child(''.join(filter(str.isalnum, id_)))
+        #users_ref.set(dictnry)
+        aaa = update_in_transaction(transaction, ref,dictnry)
+        print("aaa")
         return dictnry
     except:
         #logger.error("something in xpath happened", exc_info=True)
         return
+@firestore.transactional
+def update_in_transaction(transaction, news_ref,d):
+    #import pdb; pdb.set_trace()
+    news_to_write = [];
+    for key,value in d.items():
+        doc_ref = news_ref.document(key);
+        try:
+            snapshot = doc_ref.get(field_paths=[], transaction=transaction)
+            if not snapshot.exists:
+                news_to_write.append(key)
+        except Exception as e:
+            if(e.code == 404): 
+                news_to_write.append(key)
+    print(news_to_write)
+    try:
+        for key in news_to_write:
+            doc_ref = news_ref.document(key)
+            transaction.create(doc_ref, document_data=d[key])
+        return True
+    except Exception as e:
+        print(e)
+        return False
 
 
 def url_to_firebase(url, name):
